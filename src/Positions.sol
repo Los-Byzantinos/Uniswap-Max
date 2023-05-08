@@ -228,15 +228,13 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
 
         if (_isShort) {
             _breakEvenLimit = price + (price * (10000 / _leverage)) / 10000;
-            _totalBorrow = _amount * (_leverage - 1); // Borrow quoteTokene
+            _totalBorrow = _amount * _leverage; // Borrow quoteToken
         } else {
             _totalBorrow = _amount * (_leverage - 1) * price; // Borrow baseToken
             _breakEvenLimit = price - (price * (10000 / _leverage)) / 10000;
         }
 
         if (_isShort || _leverage != 1) {
-            _totalBorrow += (_totalBorrow * BORROW_FEE) / 10000;
-
             address cacheLiquidityPoolToUse = LiquidityPoolFactory(
                 liquidityPoolFactory
             ).getTokenToLiquidityPools(_isShort ? quoteToken : baseToken);
