@@ -308,6 +308,10 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
         uint256 _posId
     ) external onlyOwner isPositionOwned(_trader, _posId) {
         PositionParams memory posParms = openPositions[_posId];
+        uint256 price = PriceFeedL1(priceFeed).getLatestPrice(
+            address(posParms.baseToken),
+            address(posParms.quoteToken)
+        );
 
         // check the position state
 
