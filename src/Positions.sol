@@ -5,6 +5,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Base64.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 import "@uniswapV3/contracts/interfaces/IUniswapV3Pool.sol";
 
 import "./PriceFeedL1.sol";
@@ -16,13 +18,14 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
         OPEN,
         CLOSED_WITH_LIMIT_ORDER,
         CLOSED_WITH_STOP_LOSS,
-        CLOSED_BY_LIQUIDATOR
+        CLOSED_BY_LIQUIDATOR,
+        CLOSED_BY_OWNER
     }
 
     struct PositionParams {
         IUniswapV3Pool v3Pool; // pool to trade
-        IERC20 baseToken; // token to trade => should be token0 or token1 of v3Pool
-        IERC20 quoteToken; // token to trade => should be the other token of v3Pool
+        ERC20 baseToken; // token to trade => should be token0 or token1 of v3Pool
+        ERC20 quoteToken; // token to trade => should be the other token of v3Pool
         uint256 amount; // amount of token to trade
         uint256 initialPrice; // price of the token when the position was opened
         uint64 timestamp; // timestamp of position creation
@@ -33,6 +36,7 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
         uint256 breakEvenLimit; // After this limit the posiiton is undercollateralize => 0 if no leverage or short
         uint256 limitPrice; // limit order price => 0 if no limit order
         uint256 stopLossPrice; // stop loss price => 0 if no stop loss
+        positionState status; // status of the position
     }
 
     // Variables
@@ -49,15 +53,18 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
     uint256 public posId;
     mapping(uint256 => PositionParams) public openPositions;
 
+    string private constant BASE_SVG =
+        "<svg xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='xMinYMin meet' viewBox='0 0 350 350'><style>.base { fill: white; font-family: serif; font-size: 24px; }</style><rect width='100%' height='100%' fill='black' /><text x='50%' y='50%' class='base' dominant-baseline='middle' text-anchor='middle'>";
+
     // Errors
-    error Positions__POSITION_NOT_OPEN();
+    error Positions__POSITION_NOT_OPEN(uint256 _posId);
     error Positions__POSITION_NOT_OWNED(address _trader, uint256 _posId);
     error Positions__POOL_NOT_OFFICIAL(address _v3Pool);
     error Positions__TOKEN_NOT_SUPPORTED(address _token);
     error Positions__TOKEN_NOT_SUPPORTED_ON_MARGIN(address _token);
     error Positions__NO_PRICE_FEED(address _token0, address _token1);
     error Positions__LEVERAGE_NOT_IN_RANGE(uint8 _leverage);
-    error Positions__amount_TO_SMALL(uint256 _amount);
+    error Positions__AMOUNT_TO_SMALL(uint256 _amount);
     error Positions__LIMIT_ORDER_PRICE_NOT_CONCISTENT(
         uint256 _limitPrice,
         uint256 _amount
@@ -81,7 +88,7 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
 
     modifier isPositionOpen(uint256 _posId) {
         if (ownerOf(_posId) == address(0)) {
-            revert Positions__POSITION_NOT_OPEN();
+            revert Positions__POSITION_NOT_OPEN(_posId);
         }
         _;
     }
@@ -104,6 +111,85 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
 
     function safeBurn(uint256 _posId) private {
         _burn(_posId);
+    }
+
+    function tokenURI(
+        uint256 _tokenId
+    ) public view virtual override returns (string memory) {
+        if (_tokenId >= posId) {
+            revert Positions__POSITION_NOT_OPEN(_tokenId);
+        }
+
+        string memory json = Base64.encode(
+            bytes(
+                string.concat(
+                    tokenURIIntro(_tokenId),
+                    tokenURIAttributes(openPositions[_tokenId])
+                )
+            )
+        );
+
+        return string.concat("data:application/json;base64,", json);
+    }
+
+    function tokenURIIntro(
+        uint256 _tokenId
+    ) private pure returns (string memory) {
+        return
+            string.concat(
+                '{"name": "Uniswap-Max Position #',
+                Strings.toString(_tokenId),
+                '", "description": "This NFT represent a position on Uniswap-Max. The owner can close or edit the position.", "image": "',
+                imageURI(_tokenId)
+            );
+    }
+
+    function tokenURIAttributes(
+        PositionParams memory _position
+    ) private view returns (string memory) {
+        string[2] memory parts = [
+            // To avoid stack too deep error
+            string.concat(
+                '", "attributes": [ { "trait_type": "Token", "value": "',
+                _position.baseToken.name(), //? maybe write the quote token too
+                '"}, { "trait_type": "Amount", "value": "',
+                Strings.toString(_position.amount),
+                '"} , { "trait_type": "Direction", "value": "',
+                _position.isShort ? "Short" : "Long",
+                '"}, { "trait_type": "Leverage", "value": "',
+                Strings.toString(_position.leverage)
+            ),
+            string.concat(
+                '"}, { "trait_type": "Limit Price", "value": "',
+                Strings.toString(_position.limitPrice),
+                '"}, { "trait_type": "Stop Loss Price", "value": "',
+                Strings.toString(_position.stopLossPrice),
+                '"}, { "trait_type": "Status", "value": "',
+                _position.status == positionState.OPEN
+                    ? "Open"
+                    : _position.status == positionState.CLOSED_BY_OWNER // TODO : check different status
+                    ? "Closed"
+                    : "Liquidated",
+                '"}]}'
+            )
+        ];
+
+        return string.concat(parts[0], parts[1]);
+    }
+
+    function imageURI(uint256 _tokenId) private pure returns (string memory) {
+        string memory svg = string.concat(
+            BASE_SVG,
+            "UNISWAP-MAX #",
+            Strings.toString(_tokenId),
+            "</text></svg>"
+        );
+
+        return
+            string.concat(
+                "data:image/svg+xml;base64,",
+                Base64.encode(bytes(svg))
+            );
     }
 
     // --------------- Trader Zone ---------------
@@ -191,8 +277,8 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
 
         openPositions[posId + 1] = PositionParams(
             IUniswapV3Pool(_v3Pool),
-            IERC20(baseToken),
-            IERC20(quoteToken),
+            ERC20(baseToken),
+            ERC20(quoteToken),
             _amount,
             price,
             uint64(block.timestamp),
@@ -202,7 +288,8 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
             hourlyFees,
             _breakEvenLimit,
             _limitPrice,
-            _stopLossPrice
+            _stopLossPrice,
+            positionState.OPEN
         );
 
         return safeMint(_trader);
@@ -271,7 +358,7 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
 
         // check amount
         if (_amount < MIN_POSITION_AMOUNT_IN_USD) {
-            revert Positions__amount_TO_SMALL(_amount);
+            revert Positions__AMOUNT_TO_SMALL(_amount);
         }
         if (_isShort) {
             if (_limitPrice > price) {
@@ -324,7 +411,7 @@ contract Positions is ERC721, Ownable, ReentrancyGuard {
         if (posParms.isShort || posParms.leverage != 1) {
             // TODO : close the position
         } else {
-            IERC20(posParms.baseToken).transfer(_trader, posParms.amount);
+            ERC20(posParms.baseToken).transfer(_trader, posParms.amount);
         }
 
         // refund LiquidityPool + Fees
